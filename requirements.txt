@@ -1,0 +1,8 @@
+python-telegram-bot
+APScheduler
+flask
+pytz
+gunicorn
+pymongo
+dnspython
+certifi
