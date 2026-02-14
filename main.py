@@ -9,7 +9,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from io import BytesIO
 from pymongo import MongoClient
-from bson.objectid import ObjectId # Added for deletion
+from bson.objectid import ObjectId
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("BOT_TOKEN") 
@@ -83,7 +83,7 @@ async def check_auth(update: Update):
     if update.effective_user.id != int(OWNER_ID): return False
     return True
 
-# --- STATS ENGINE ---
+# --- STATS ENGINE (Restored Detailed Version) ---
 def calculate_stats():
     all_logs = logs_col.find({}, {"content": 1})
     
@@ -150,53 +150,34 @@ async def send_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(job.chat_id, text=f"🔔 **ALERT:**\n{job.data}", parse_mode="Markdown")
 
-# --- UPDATED LIST & DELETE LOGIC ---
-
 async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    
-    # We look at the ACTIVE Memory (Job Queue) to get the Next Run Time
     jobs = context.job_queue.jobs()
-    
     if not jobs: 
         await update.message.reply_text("No active alerts.")
         return
-        
-    msg = "**⏰ Active Cloud Alerts:**\n"
+    msg = "**⏰ Active Alerts:**\n"
     for i, job in enumerate(jobs):
-        # Calculate Next Run Time
         next_run = "Running..."
         if job.next_t:
             next_run = job.next_t.astimezone(IST).strftime("%d-%m %H:%M")
-            
         msg += f"ID: `{i}` | {next_run} | {job.data}\n"
-        
     msg += "\n`/kill <ID>` to delete."
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     if not context.args: return
-    
     try:
-        # User gives us the Simple ID (0, 1, 2...)
         simple_id = int(context.args[0])
         jobs = context.job_queue.jobs()
-        
         if simple_id < 0 or simple_id >= len(jobs):
             await update.message.reply_text("❌ Invalid ID.")
             return
-
-        # We find the real Mongo ID hidden inside the job
         target_job = jobs[simple_id]
         mongo_id = target_job.name 
-        
-        # 1. Delete from Cloud (MongoDB)
         reminders_col.delete_one({'_id': ObjectId(mongo_id)})
-        
-        # 2. Delete from Memory
         target_job.schedule_removal()
-            
         await update.message.reply_text(f"🗑️ Deleted: {target_job.data}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -210,17 +191,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("⏰ Reminders"), KeyboardButton("❓ Help")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("**Trading Bot (Cloud Edition).**\nLogs & Reminders are safe in MongoDB.", reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text("**Trading Bot Ready.**", reply_markup=reply_markup, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    msg = (
-        "**📈 COMMANDS:**\n\n"
-        "**1. Log Trade:**\n`/pnl +5000 Nifty Call`\n\n"
-        "**2. Reminders (Auto-Saved):**\n"
-        "`/reminder 09 15 Open`\n"
-        "`/reminder week mon 10 00 Weekly Meet`\n"
-    )
+    msg = "**📈 COMMANDS:**\n`/pnl +5000 Nifty`\n`/reminder 09 15 Open`"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,25 +214,43 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ First value must be a number.")
 
+# --- THE FIXED JOURNAL REPORT (OLD STYLE) ---
 async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     total, wins, losses, win_rate, net, gross_profit, gross_loss = calculate_stats()
     
     trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}).sort("timestamp", 1))
 
-    report = "=== 🏛️ MASTER TRADING JOURNAL ===\n\n"
+    # --- RESTORED EXACT FORMATTING ---
+    report = "========================================\n"
+    report += "         🏛️ MASTER TRADING JOURNAL       \n"
+    report += "========================================\n\n"
+    report += "--- 📜 TRADE LIST ---\n"
+    
     if not trades:
-        report += "No trades yet.\n"
+        report += "No trades recorded yet.\n"
     else:
         for doc in trades:
-            report += f"[{doc['timestamp'][:16]}] {doc['content']}\n"
+            short_time = doc['timestamp'][:16]
+            content = doc['content']
+            report += f"[{short_time}] {content}\n"
     
-    report += f"\n=== 📊 STATS ===\nNet P&L: ₹{net}\nWin Rate: {win_rate}%"
+    report += "\n"
+    report += "========================================\n"
+    report += "         📊 PERFORMANCE STATS           \n"
+    report += "========================================\n"
+    report += f"Total Trades  : {total}\n"
+    report += f"Win Rate      : {win_rate}%\n"
+    report += f"Gross Profit  : ₹{gross_profit}\n"
+    report += f"Gross Loss    : ₹{gross_loss}\n"
+    report += f"----------------------------------------\n"
+    report += f"NET P&L       : ₹{net}\n"
+    report += "========================================\n"
 
     file_bytes = BytesIO(report.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
     file_bytes.name = f"Report_{today}.txt"
-    await update.message.reply_document(document=file_bytes, caption=f"📊 Net P&L: ₹{net}")
+    await update.message.reply_document(document=file_bytes, caption=f"📊 Report: Net P&L ₹{net}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
@@ -326,7 +319,6 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = " ".join(args[4:])
             r_type = 'weekly'
             r_args = [day_map[day_str], h, m]
-            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_daily(send_reminder_job, datetime.time(h, m, tzinfo=IST), days=(day_map[day_str],), chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Weekly Alert Saved.")
@@ -336,7 +328,6 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = " ".join(args[4:])
             r_type = 'monthly'
             r_args = [d, h, m]
-            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_monthly(send_reminder_job, datetime.time(h, m, tzinfo=IST), day=d, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Monthly Alert Saved.")
@@ -345,12 +336,10 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d, month, h, m = int(args[1]), int(args[2]), int(args[3]), int(args[4])
             msg = " ".join(args[5:])
             r_type = 'yearly'
-            
             now = datetime.datetime.now(IST)
             target = now.replace(month=month, day=d, hour=h, minute=m, second=0)
             if target < now: target = target.replace(year=now.year + 1)
             r_args = [target.timestamp()] 
-            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_repeating(send_reminder_job, interval=31536000, first=target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Yearly Alert Saved.")
@@ -359,12 +348,10 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d, month, h, m = int(args[0]), int(args[1]), int(args[2]), int(args[3])
             msg = " ".join(args[4:])
             r_type = 'once'
-            
             now = datetime.datetime.now(IST)
             target = now.replace(month=month, day=d, hour=h, minute=m, second=0)
             if target < now: target = target.replace(year=now.year + 1)
             r_args = [target.timestamp()]
-            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_once(send_reminder_job, target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Date Alert Saved.")
@@ -373,12 +360,10 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             h, m = int(args[0]), int(args[1])
             msg = " ".join(args[2:])
             r_type = 'once'
-            
             now = datetime.datetime.now(IST)
             target = now.replace(hour=h, minute=m, second=0)
             if target < now: target += datetime.timedelta(days=1)
             r_args = [target.timestamp()]
-
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_once(send_reminder_job, target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Today Alert Saved.")
@@ -407,5 +392,5 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_media))
 
-    print("🤖 TRADING BOT (FINAL CLOUD) RUNNING...")
+    print("🤖 TRADING BOT (PERFECT UI) RUNNING...")
     application.run_polling()
