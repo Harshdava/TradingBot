@@ -18,14 +18,12 @@ MONGO_URI = os.environ.get("MONGO_URI")
 IST = pytz.timezone('Asia/Kolkata')
 
 # --- MONGODB CONNECTION ---
-# We use certifi to avoid SSL errors on some clouds
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-# IMPORTANT: This name 'trading_bot' separates it from your MovieBox bot
 db = client['trading_bot']
 logs_col = db['logs']           
 reminders_col = db['reminders'] 
 
-# --- KEEP ALIVE SERVER (For Render) ---
+# --- KEEP ALIVE SERVER ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Trading Bot (MongoDB) Online!"
@@ -34,7 +32,12 @@ def keep_alive():
     t = threading.Thread(target=run_http)
     t.start()
 
-# --- DATABASE FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
+
+# FIX: Added missing function
+def extract_tags(text):
+    if not text: return ""
+    return ", ".join(re.findall(r"#\w+", text))
 
 def save_log(content, tags, custom_date=None):
     if custom_date:
