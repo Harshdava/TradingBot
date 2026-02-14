@@ -9,6 +9,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from io import BytesIO
 from pymongo import MongoClient
+from bson.objectid import ObjectId # Added for deletion
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("BOT_TOKEN") 
@@ -34,7 +35,6 @@ def keep_alive():
 
 # --- HELPER FUNCTIONS ---
 
-# FIX: Added missing function
 def extract_tags(text):
     if not text: return ""
     return ", ".join(re.findall(r"#\w+", text))
@@ -149,6 +149,57 @@ async def restore_reminders(app):
 async def send_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(job.chat_id, text=f"🔔 **ALERT:**\n{job.data}", parse_mode="Markdown")
+
+# --- UPDATED LIST & DELETE LOGIC ---
+
+async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update): return
+    
+    # We look at the ACTIVE Memory (Job Queue) to get the Next Run Time
+    jobs = context.job_queue.jobs()
+    
+    if not jobs: 
+        await update.message.reply_text("No active alerts.")
+        return
+        
+    msg = "**⏰ Active Cloud Alerts:**\n"
+    for i, job in enumerate(jobs):
+        # Calculate Next Run Time
+        next_run = "Running..."
+        if job.next_t:
+            next_run = job.next_t.astimezone(IST).strftime("%d-%m %H:%M")
+            
+        msg += f"ID: `{i}` | {next_run} | {job.data}\n"
+        
+    msg += "\n`/kill <ID>` to delete."
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update): return
+    if not context.args: return
+    
+    try:
+        # User gives us the Simple ID (0, 1, 2...)
+        simple_id = int(context.args[0])
+        jobs = context.job_queue.jobs()
+        
+        if simple_id < 0 or simple_id >= len(jobs):
+            await update.message.reply_text("❌ Invalid ID.")
+            return
+
+        # We find the real Mongo ID hidden inside the job
+        target_job = jobs[simple_id]
+        mongo_id = target_job.name 
+        
+        # 1. Delete from Cloud (MongoDB)
+        reminders_col.delete_one({'_id': ObjectId(mongo_id)})
+        
+        # 2. Delete from Memory
+        target_job.schedule_removal()
+            
+        await update.message.reply_text(f"🗑️ Deleted: {target_job.data}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 # --- COMMANDS ---
 
@@ -336,37 +387,6 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(e)
         await update.message.reply_text("❌ Format Error.")
 
-async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update): return
-    reminders = list(reminders_col.find())
-    
-    if not reminders: await update.message.reply_text("No active alerts."); return
-    msg = "**⏰ Active Cloud Alerts:**\n"
-    for i, r in enumerate(reminders):
-        msg += f"ID: `{str(r['_id'])}` | {r['type'].upper()} | {r['msg']}\n"
-    msg += "\n`/kill <ID>` to delete."
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update): return
-    if not context.args: return
-    
-    try:
-        mongo_id = context.args[0]
-        from bson.objectid import ObjectId
-        
-        # Delete from DB
-        reminders_col.delete_one({'_id': ObjectId(mongo_id)})
-        
-        # Delete from Memory (Scheduler)
-        jobs = context.job_queue.get_jobs_by_name(mongo_id)
-        for job in jobs:
-            job.schedule_removal()
-            
-        await update.message.reply_text("🗑️ Deleted from Cloud & Memory.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
 async def post_init(application: ApplicationBuilder):
     await restore_reminders(application)
 
@@ -387,5 +407,5 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_media))
 
-    print("🤖 TRADING BOT (MONGO-POWERED) RUNNING...")
+    print("🤖 TRADING BOT (FINAL CLOUD) RUNNING...")
     application.run_polling()
