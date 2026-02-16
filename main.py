@@ -20,6 +20,7 @@ IST = pytz.timezone('Asia/Kolkata')
 
 # --- MONGODB CONNECTION ---
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+# This name 'trading_bot' separates it from your MovieBox bot
 db = client['trading_bot']
 logs_col = db['logs']           
 reminders_col = db['reminders'] 
@@ -55,41 +56,26 @@ def save_log(content, tags, custom_date=None):
 def get_logs(tag_filter=None):
     if tag_filter:
         query = {"tags": {"$regex": tag_filter}}
-        return list(logs_col.find(query))
+        return list(logs_col.find(query).sort("timestamp", -1))
     else:
-        return list(logs_col.find())
+        return list(logs_col.find().sort("timestamp", -1))
 
 def clear_logs_for_restore():
     logs_col.delete_many({})
 
-# --- THE FIXED LOGIC IS HERE ---
 def format_logs_for_export(logs):
     if not logs: return "No entries found."
-    
-    # 1. Group by Date
-    grouped_data = {}
-    for doc in logs:
-        # Extract just the date (YYYY-MM-DD)
-        date_part = doc['timestamp'].split(' ')[0]
-        if date_part not in grouped_data:
-            grouped_data[date_part] = []
-        grouped_data[date_part].append(doc)
-    
-    # 2. Sort Dates: NEWEST FIRST (Descending)
-    # 16th will come before 15th
-    sorted_dates = sorted(grouped_data.keys(), reverse=True)
-    
     output = []
-    for date in sorted_dates:
-        output.append(f"\n=== 📅 {date} ===\n")
+    current_date = None
+    for doc in logs:
+        timestamp_str = doc['timestamp']
+        content = doc['content']
         
-        # 3. Sort Messages inside date: OLDEST FIRST (Ascending)
-        # Morning messages come before Evening messages
-        day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
-        
-        for doc in day_messages:
-            output.append(f"{doc['content']}\n\n")
-            
+        date_part = timestamp_str.split(' ')[0]
+        if date_part != current_date:
+            output.append(f"\n=== 📅 {date_part} ===\n")
+            current_date = date_part
+        output.append(f"{content}\n\n")
     return "".join(output)
 
 # --- SECURITY CHECK ---
@@ -170,6 +156,7 @@ async def send_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     
+    # Check Active Memory for accurate "Next Run Time"
     jobs = context.job_queue.jobs()
     
     if not jobs: 
@@ -201,6 +188,7 @@ async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_job = jobs[simple_id]
         mongo_id = target_job.name 
         
+        # Delete from Cloud & Memory
         reminders_col.delete_one({'_id': ObjectId(mongo_id)})
         target_job.schedule_removal()
             
@@ -246,21 +234,25 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ First value must be a number.")
 
-# --- THE JOURNAL REPORT ---
+# --- THE JOURNAL REPORT (PROFESSIONAL BOX STYLE) ---
 async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     total, wins, losses, win_rate, net, gross_profit, gross_loss = calculate_stats()
     
-    # Get trades and use format_logs_for_export for consistent sorting
-    trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}))
+    trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}).sort("timestamp", 1))
 
     report = "========================================\n"
     report += "         🏛️ MASTER TRADING JOURNAL       \n"
     report += "========================================\n\n"
     report += "--- 📜 TRADE LIST ---\n"
     
-    # Use the Helper Function to sort correctly
-    report += format_logs_for_export(trades)
+    if not trades:
+        report += "No trades recorded yet.\n"
+    else:
+        for doc in trades:
+            short_time = doc['timestamp'][:16]
+            content = doc['content']
+            report += f"[{short_time}] {content}\n"
     
     report += "\n"
     report += "========================================\n"
@@ -301,7 +293,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     logs = get_logs()
-    # Use the Helper Function to sort correctly
     file_content = format_logs_for_export(logs)
     file_bytes = BytesIO(file_content.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
@@ -324,9 +315,7 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for line in lines:
         line = line.strip()
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: 
-            current_date = date_match.group(1)
-            continue
+        if date_match: current_date = date_match.group(1); continue
         if line: save_log(line, extract_tags(line), current_date)
     await update.message.reply_text("♻️ **Cloud Database Updated from File.**")
 
@@ -342,15 +331,18 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r_args = []
         msg = ""
         
+        # 1. DAILY
         if first == 'daily':
             h, m = int(args[1]), int(args[2])
             msg = " ".join(args[3:])
             r_type = 'daily'
             r_args = [h, m]
+            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_daily(send_reminder_job, datetime.time(h, m, tzinfo=IST), chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Daily Alert Saved.")
 
+        # 2. WEEKLY
         elif first == 'week':
             day_map = {'mon':0, 'tue':1, 'wed':2, 'thu':3, 'fri':4, 'sat':5, 'sun':6}
             day_str = args[1][:3].lower()
@@ -358,51 +350,63 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = " ".join(args[4:])
             r_type = 'weekly'
             r_args = [day_map[day_str], h, m]
+            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_daily(send_reminder_job, datetime.time(h, m, tzinfo=IST), days=(day_map[day_str],), chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Weekly Alert Saved.")
 
+        # 3. MONTHLY
         elif first == 'month':
             d, h, m = int(args[1]), int(args[2]), int(args[3])
             msg = " ".join(args[4:])
             r_type = 'monthly'
             r_args = [d, h, m]
+            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_monthly(send_reminder_job, datetime.time(h, m, tzinfo=IST), day=d, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Monthly Alert Saved.")
 
+        # 4. YEARLY
         elif first == 'year':
             d, month, h, m = int(args[1]), int(args[2]), int(args[3]), int(args[4])
             msg = " ".join(args[5:])
             r_type = 'yearly'
+            
             now = datetime.datetime.now(IST)
             target = now.replace(month=month, day=d, hour=h, minute=m, second=0)
             if target < now: target = target.replace(year=now.year + 1)
             r_args = [target.timestamp()] 
+            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_repeating(send_reminder_job, interval=31536000, first=target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Yearly Alert Saved.")
 
+        # 5. DATE (Specific)
         elif len(args) >= 4:
             d, month, h, m = int(args[0]), int(args[1]), int(args[2]), int(args[3])
             msg = " ".join(args[4:])
             r_type = 'once'
+            
             now = datetime.datetime.now(IST)
             target = now.replace(month=month, day=d, hour=h, minute=m, second=0)
             if target < now: target = target.replace(year=now.year + 1)
             r_args = [target.timestamp()]
+            
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_once(send_reminder_job, target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Date Alert Saved.")
 
+        # 6. TODAY (Quick)
         elif len(args) >= 2:
             h, m = int(args[0]), int(args[1])
             msg = " ".join(args[2:])
             r_type = 'once'
+            
             now = datetime.datetime.now(IST)
             target = now.replace(hour=h, minute=m, second=0)
             if target < now: target += datetime.timedelta(days=1)
             r_args = [target.timestamp()]
+
             res = reminders_col.insert_one({'chat_id': chat_id, 'type': r_type, 'args': r_args, 'msg': msg})
             context.job_queue.run_once(send_reminder_job, target, chat_id=chat_id, data=msg, name=str(res.inserted_id))
             await update.message.reply_text(f"✅ Today Alert Saved.")
@@ -431,5 +435,5 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_media))
 
-    print("🤖 TRADING BOT (PERFECT SORTED) RUNNING...")
+    print("🤖 TRADING BOT (FINAL CLOUD EDITION) RUNNING...")
     application.run_polling()
