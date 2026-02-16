@@ -52,7 +52,6 @@ def save_log(content, tags, custom_date=None):
     }
     logs_col.insert_one(doc)
 
-# UPDATED: To show newest messages first
 def get_logs(tag_filter=None):
     if tag_filter:
         query = {"tags": {"$regex": tag_filter}}
@@ -217,12 +216,12 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ First value must be a number.")
 
-# --- THE JOURNAL REPORT (SORTED: NEWEST FIRST) ---
+# --- THE JOURNAL REPORT (NEWEST DATE & NEWEST MESSAGES FIRST) ---
 async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     total, wins, losses, win_rate, net, gross_profit, gross_loss = calculate_stats()
     
-    # UPDATED: Added .sort("timestamp", -1) to show newest entries on top
+    # NEWEST FIRST: Both date and messages sorted descending
     all_entries = list(logs_col.find().sort("timestamp", -1))
 
     report = "========================================\n"
@@ -236,11 +235,12 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_date = None
         for doc in all_entries:
             date_part = doc['timestamp'].split(' ')[0]
+            
+            # Show Newest Date Block at the top
             if date_part != current_date:
                 report += f"\n=== 📅 {date_part} ===\n"
                 current_date = date_part
             
-            short_time = doc['timestamp'].split(' ')[1][:5]
             content = doc['content']
             report += f"{content}\n\n"
     
@@ -282,12 +282,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    # Backup uses chronological order for easier re-importing
     logs = list(logs_col.find().sort("timestamp", 1))
     file_content = format_logs_for_export(logs)
     file_bytes = BytesIO(file_content.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
-    file_bytes.name = f"Full_Backup_{today}.txt"
+    file_bytes.name = f"Backup_{today}.txt"
     await update.message.reply_document(document=file_bytes, caption="📦 Complete Data Backup")
 
 async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,7 +305,7 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for line in lines:
         line = line.strip()
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: current_date = date_part; continue
+        if date_match: current_date = date_match.group(1); continue
         if line: save_log(line, extract_tags(line), current_date)
     await update.message.reply_text("♻️ **Cloud Database Restored.**")
 
