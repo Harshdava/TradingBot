@@ -55,26 +55,41 @@ def save_log(content, tags, custom_date=None):
 def get_logs(tag_filter=None):
     if tag_filter:
         query = {"tags": {"$regex": tag_filter}}
-        return list(logs_col.find(query).sort("timestamp", -1))
+        return list(logs_col.find(query))
     else:
-        return list(logs_col.find().sort("timestamp", -1))
+        return list(logs_col.find())
 
 def clear_logs_for_restore():
     logs_col.delete_many({})
 
+# --- THE FIXED LOGIC IS HERE ---
 def format_logs_for_export(logs):
     if not logs: return "No entries found."
-    output = []
-    current_date = None
+    
+    # 1. Group by Date
+    grouped_data = {}
     for doc in logs:
-        timestamp_str = doc['timestamp']
-        content = doc['content']
+        # Extract just the date (YYYY-MM-DD)
+        date_part = doc['timestamp'].split(' ')[0]
+        if date_part not in grouped_data:
+            grouped_data[date_part] = []
+        grouped_data[date_part].append(doc)
+    
+    # 2. Sort Dates: NEWEST FIRST (Descending)
+    # 16th will come before 15th
+    sorted_dates = sorted(grouped_data.keys(), reverse=True)
+    
+    output = []
+    for date in sorted_dates:
+        output.append(f"\n=== 📅 {date} ===\n")
         
-        date_part = timestamp_str.split(' ')[0]
-        if date_part != current_date:
-            output.append(f"\n=== 📅 {date_part} ===\n")
-            current_date = date_part
-        output.append(f"{content}\n\n")
+        # 3. Sort Messages inside date: OLDEST FIRST (Ascending)
+        # Morning messages come before Evening messages
+        day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
+        
+        for doc in day_messages:
+            output.append(f"{doc['content']}\n\n")
+            
     return "".join(output)
 
 # --- SECURITY CHECK ---
@@ -150,36 +165,45 @@ async def send_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(job.chat_id, text=f"🔔 **ALERT:**\n{job.data}", parse_mode="Markdown")
 
-# --- LIST & DELETE ---
+# --- LIST & DELETE (User Friendly) ---
 
 async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
+    
     jobs = context.job_queue.jobs()
+    
     if not jobs: 
         await update.message.reply_text("No active alerts.")
         return
-    msg = "**⏰ Active Alerts:**\n"
+        
+    msg = "**⏰ Active Cloud Alerts:**\n"
     for i, job in enumerate(jobs):
         next_run = "Running..."
         if job.next_t:
             next_run = job.next_t.astimezone(IST).strftime("%d-%m %H:%M")
         msg += f"ID: `{i}` | {next_run} | {job.data}\n"
+        
     msg += "\n`/kill <ID>` to delete."
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     if not context.args: return
+    
     try:
         simple_id = int(context.args[0])
         jobs = context.job_queue.jobs()
+        
         if simple_id < 0 or simple_id >= len(jobs):
             await update.message.reply_text("❌ Invalid ID.")
             return
+
         target_job = jobs[simple_id]
         mongo_id = target_job.name 
+        
         reminders_col.delete_one({'_id': ObjectId(mongo_id)})
         target_job.schedule_removal()
+            
         await update.message.reply_text(f"🗑️ Deleted: {target_job.data}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -193,11 +217,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("⏰ Reminders"), KeyboardButton("❓ Help")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("**Trading Bot Ready.**", reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text("**Trading Bot Ready.**\nLogs & Reminders are safe in MongoDB.", reply_markup=reply_markup, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    msg = "**📈 COMMANDS:**\n`/pnl +5000 Nifty`\n`/reminder daily 09 15 Open`"
+    msg = (
+        "**📈 COMMANDS:**\n\n"
+        "**1. Log Trade:**\n`/pnl +5000 Nifty Call`\n\n"
+        "**2. Reminders:**\n"
+        "`/reminder daily 09 15 Market Open`\n"
+        "`/reminder week mon 10 00 Weekly Meet`\n"
+    )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,33 +246,21 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ First value must be a number.")
 
-# --- THE JOURNAL REPORT (NEWEST DATE & NEWEST MESSAGES FIRST) ---
+# --- THE JOURNAL REPORT ---
 async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     total, wins, losses, win_rate, net, gross_profit, gross_loss = calculate_stats()
     
-    # NEWEST FIRST: Both date and messages sorted descending
-    all_entries = list(logs_col.find().sort("timestamp", -1))
+    # Get trades and use format_logs_for_export for consistent sorting
+    trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}))
 
     report = "========================================\n"
     report += "         🏛️ MASTER TRADING JOURNAL       \n"
     report += "========================================\n\n"
     report += "--- 📜 TRADE LIST ---\n"
     
-    if not all_entries:
-        report += "No entries recorded yet.\n"
-    else:
-        current_date = None
-        for doc in all_entries:
-            date_part = doc['timestamp'].split(' ')[0]
-            
-            # Show Newest Date Block at the top
-            if date_part != current_date:
-                report += f"\n=== 📅 {date_part} ===\n"
-                current_date = date_part
-            
-            content = doc['content']
-            report += f"{content}\n\n"
+    # Use the Helper Function to sort correctly
+    report += format_logs_for_export(trades)
     
     report += "\n"
     report += "========================================\n"
@@ -258,8 +276,8 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_bytes = BytesIO(report.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
-    file_bytes.name = f"Journal_{today}.txt"
-    await update.message.reply_document(document=file_bytes, caption=f"📊 Status: Net P&L ₹{net}")
+    file_bytes.name = f"Report_{today}.txt"
+    await update.message.reply_document(document=file_bytes, caption=f"📊 Report: Net P&L ₹{net}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
@@ -282,12 +300,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    logs = list(logs_col.find().sort("timestamp", 1))
+    logs = get_logs()
+    # Use the Helper Function to sort correctly
     file_content = format_logs_for_export(logs)
     file_bytes = BytesIO(file_content.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
     file_bytes.name = f"Backup_{today}.txt"
-    await update.message.reply_document(document=file_bytes, caption="📦 Complete Data Backup")
+    await update.message.reply_document(document=file_bytes, caption="📦 Cloud Data Backup")
 
 async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
@@ -305,9 +324,11 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for line in lines:
         line = line.strip()
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: current_date = date_match.group(1); continue
+        if date_match: 
+            current_date = date_match.group(1)
+            continue
         if line: save_log(line, extract_tags(line), current_date)
-    await update.message.reply_text("♻️ **Cloud Database Restored.**")
+    await update.message.reply_text("♻️ **Cloud Database Updated from File.**")
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
@@ -410,5 +431,5 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_media))
 
-    print("🤖 TRADING BOT (FINAL SORTED EDITION) RUNNING...")
+    print("🤖 TRADING BOT (PERFECT SORTED) RUNNING...")
     application.run_polling()
