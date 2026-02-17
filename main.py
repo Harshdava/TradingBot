@@ -319,24 +319,52 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(document=file_bytes, caption="📦 Cloud Data Backup")
 
 async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update): return
+    if not await check_auth(update):
+        return
+
     document = update.message.document
-    if not (document.mime_type == "text/plain" or document.file_name.endswith('.txt')): return
-    
+    if not (document.mime_type == "text/plain" or document.file_name.endswith('.txt')):
+        return
+
     file = await document.get_file()
     file_bytes = await file.download_as_bytearray()
     content = file_bytes.decode('utf-8')
-    
+
     clear_logs_for_restore()
-    
+
     lines = content.split('\n')
-    current_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+
+    current_date = None
+    second_counter = 1  # keeps order inside same day
+
     for line in lines:
-        line = line.strip()
+        line = line.rstrip()
+
+        # detect date header
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: current_date = date_match.group(1); continue
-        if line: save_log(line, extract_tags(line), current_date)
-    await update.message.reply_text("♻️ **Cloud Database Updated from File.**")
+        if date_match:
+            current_date = date_match.group(1)
+            second_counter = 1
+            continue
+
+        if not line.strip():
+            continue
+
+        # create increasing timestamp
+        fake_time = f"{current_date} 00:00:{second_counter:02d}"
+
+        doc = {
+            "timestamp": fake_time,
+            "tags": extract_tags(line),
+            "content": line
+        }
+
+        logs_col.insert_one(doc)
+
+        second_counter += 1
+
+    await update.message.reply_text("♻️ Database restored with correct order.")
+
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
