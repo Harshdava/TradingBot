@@ -265,6 +265,23 @@ async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"`{t}`\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update): return
+    
+    # 1. ડેટાબેઝમાંથી બધો ડેટા લાવો
+    logs = list(logs_col.find())
+    
+    # 2. ફોર્મેટ કરો (નવી તારીખ ઉપર, મેસેજ લાઈનમાં)
+    file_content = format_logs_for_export(logs)
+    
+    # 3. ફાઈલ બનાવો
+    file_bytes = BytesIO(file_content.encode('utf-8'))
+    today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    file_bytes.name = f"Full_Backup_{today}.txt"
+    
+    # 4. મોકલો
+    await update.message.reply_document(document=file_bytes, caption="📦 Complete Data Backup")
+
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     args = context.args
