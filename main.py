@@ -40,8 +40,11 @@ def extract_tags(text):
     if not text: return ""
     return ", ".join(re.findall(r"#\w+", text))
 
-def save_log(content, tags, custom_date=None):
-    if custom_date:
+def save_log(content, tags, custom_date=None, full_timestamp=None):
+    if full_timestamp:
+        # જો રિસ્ટોર કરતા હોઈએ તો એક્ઝેક્ટ ટાઈમ વાપરો
+        timestamp = full_timestamp
+    elif custom_date:
         timestamp = f"{custom_date} {datetime.datetime.now(IST).strftime('%H:%M:%S')}"
     else:
         timestamp = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -92,7 +95,8 @@ def format_logs_for_export(logs):
         day_messages = list(reversed(grouped[date]))
 
         for msg in day_messages:
-            output.append(f"{msg}\n\n")
+            # ફેરફાર: અહીંયાથી એક \n ઓછું કર્યું છે જેથી બ્લેન્ક લાઈન ન આવે
+            output.append(f"{msg}\n") 
 
     return "".join(output)
 
@@ -327,16 +331,42 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_bytes = await file.download_as_bytearray()
     content = file_bytes.decode('utf-8')
     
+    # જૂનો ડેટા સાફ કરો
     clear_logs_for_restore()
     
     lines = content.split('\n')
+    
+    # ડિફોલ્ટ તારીખ આજની
     current_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    
+    # રિસ્ટોર ટાઈમર સેટિંગ: સવારે 09:00 વાગ્યાથી શરુ
+    # આનાથી દરેક મેસેજને અલગ ટાઈમ મળશે એટલે શફલ નહીં થાય
+    base_time = datetime.datetime.now(IST).replace(hour=9, minute=0, second=0)
+    counter = 0 
+
     for line in lines:
-        line = line.strip()
+        line = line.strip() # આગળ પાછળની સ્પેસ કાઢી નાખે
+        
+        # જો લાઈન ખાલી હોય તો અહીંથી જ પાછા વળી જાવ (Skip Blank Lines)
+        if not line:
+            continue
+
+        # તારીખ શોધે છે
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: current_date = date_match.group(1); continue
-        if line: save_log(line, extract_tags(line), current_date)
-    await update.message.reply_text("♻️ **Cloud Database Updated from File.**")
+        if date_match: 
+            current_date = date_match.group(1)
+            counter = 0 # નવી તારીખ આવે એટલે ટાઈમર રીસેટ
+            continue
+
+        # દરેક મેસેજને 1 સેકન્ડ વધારીને ટાઈમ આપવો
+        msg_time = base_time + datetime.timedelta(seconds=counter)
+        time_str = msg_time.strftime("%H:%M:%S")
+        full_ts = f"{current_date} {time_str}"
+        
+        save_log(line, extract_tags(line), full_timestamp=full_ts)
+        counter += 1 
+
+    await update.message.reply_text(f"♻️ **Restore Complete!**\nBlank lines removed & Order fixed.")
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
