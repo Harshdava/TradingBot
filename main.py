@@ -4,9 +4,15 @@ import datetime
 import pytz
 import threading
 import certifi
+import asyncio
+
+# prevents multiple polling loops on some hosts (Render/Replit/etc)
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+
 from io import BytesIO
 from pymongo import MongoClient
 from bson.objectid import ObjectId
