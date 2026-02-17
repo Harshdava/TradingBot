@@ -65,17 +65,32 @@ def clear_logs_for_restore():
 
 def format_logs_for_export(logs):
     if not logs: return "No entries found."
-    output = []
-    current_date = None
+    
+    # 1. ડેટાને તારીખ મુજબ ગ્રુપ કરો
+    grouped_data = {}
     for doc in logs:
-        timestamp_str = doc['timestamp']
-        content = doc['content']
+        # તારીખ છૂટી પાડો (YYYY-MM-DD)
+        date_part = doc['timestamp'].split(' ')[0]
+        if date_part not in grouped_data:
+            grouped_data[date_part] = []
+        grouped_data[date_part].append(doc)
+    
+    # 2. તારીખોને સોર્ટ કરો: નવી તારીખ સૌથી ઉપર (Descending)
+    sorted_dates = sorted(grouped_data.keys(), reverse=True)
+    
+    output = []
+    for date in sorted_dates:
+        output.append(f"\n=== 📅 {date} ===\n")
         
-        date_part = timestamp_str.split(' ')[0]
-        if date_part != current_date:
-            output.append(f"\n=== 📅 {date_part} ===\n")
-            current_date = date_part
-        output.append(f"{content}\n\n")
+        # 3. મેસેજને સોર્ટ કરો: જૂના મેસેજ પહેલા (Ascending - સવારથી સાંજ)
+        day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
+        
+        for doc in day_messages:
+            # બ્લેન્ક લાઈનનો પ્રોબ્લેમ અહીં સોલ્વ કર્યો છે (.strip())
+            clean_content = doc['content'].strip()
+            if clean_content:
+                output.append(f"{clean_content}\n\n")
+            
     return "".join(output)
 
 # --- SECURITY CHECK ---
@@ -239,20 +254,16 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     total, wins, losses, win_rate, net, gross_profit, gross_loss = calculate_stats()
     
-    trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}).sort("timestamp", 1))
+    # અહીંથી .sort() કાઢી નાખ્યું છે, સાદો ડેટા લીધો
+    trades = list(logs_col.find({"content": {"$regex": "💰 P&L:"}}))
 
     report = "========================================\n"
     report += "         🏛️ MASTER TRADING JOURNAL       \n"
     report += "========================================\n\n"
     report += "--- 📜 TRADE LIST ---\n"
     
-    if not trades:
-        report += "No trades recorded yet.\n"
-    else:
-        for doc in trades:
-            short_time = doc['timestamp'][:16]
-            content = doc['content']
-            report += f"[{short_time}] {content}\n"
+    # હવે ફોર્મેટ ફંક્શન પોતે જ સોર્ટ કરશે
+    report += format_logs_for_export(trades)
     
     report += "\n"
     report += "========================================\n"
@@ -292,7 +303,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
-    logs = get_logs()
+    # અહીંથી ગેટ લોગ્સ સીધું કોલ કરો (સોર્ટિંગ ફોર્મેટરમાં થશે)
+    logs = list(logs_col.find()) 
     file_content = format_logs_for_export(logs)
     file_bytes = BytesIO(file_content.encode('utf-8'))
     today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
@@ -302,22 +314,36 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     document = update.message.document
+    
+    # ફાઈલ ચેક કરો
     if not (document.mime_type == "text/plain" or document.file_name.endswith('.txt')): return
     
     file = await document.get_file()
     file_bytes = await file.download_as_bytearray()
     content = file_bytes.decode('utf-8')
     
+    # જૂનો ડેટા સાફ કરો
     clear_logs_for_restore()
     
     lines = content.split('\n')
     current_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    count = 0
+    
     for line in lines:
         line = line.strip()
+        
+        # તારીખની લાઈન હોય તો અપડેટ કરો
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: current_date = date_match.group(1); continue
-        if line: save_log(line, extract_tags(line), current_date)
-    await update.message.reply_text("♻️ **Cloud Database Updated from File.**")
+        if date_match: 
+            current_date = date_match.group(1)
+            continue
+            
+        # જો લાઈન ખાલી ના હોય અને તારીખ વાળી ના હોય તો જ સેવ કરો
+        if line and not line.startswith("==="):
+            save_log(line, extract_tags(line), current_date)
+            count += 1
+            
+    await update.message.reply_text(f"♻️ **Restore Complete! {count} entries saved.**")
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
