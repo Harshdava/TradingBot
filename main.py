@@ -66,30 +66,28 @@ def clear_logs_for_restore():
 def format_logs_for_export(logs):
     if not logs: return "No entries found."
     
-    # 1. ડેટાને તારીખ મુજબ ગ્રુપ કરો
+    # 1. Group by Date
     grouped_data = {}
     for doc in logs:
-        # તારીખ છૂટી પાડો (YYYY-MM-DD)
         date_part = doc['timestamp'].split(' ')[0]
-        if date_part not in grouped_data:
-            grouped_data[date_part] = []
+        if date_part not in grouped_data: grouped_data[date_part] = []
         grouped_data[date_part].append(doc)
     
-    # 2. તારીખોને સોર્ટ કરો: નવી તારીખ સૌથી ઉપર (Descending)
+    # 2. Sort Dates: NEWEST FIRST (Descending)
     sorted_dates = sorted(grouped_data.keys(), reverse=True)
     
     output = []
     for date in sorted_dates:
         output.append(f"\n=== 📅 {date} ===\n")
         
-        # 3. મેસેજને સોર્ટ કરો: જૂના મેસેજ પહેલા (Ascending - સવારથી સાંજ)
+        # 3. Sort Messages: OLDEST FIRST (Ascending)
         day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
         
         for doc in day_messages:
-            # બ્લેન્ક લાઈનનો પ્રોબ્લેમ અહીં સોલ્વ કર્યો છે (.strip())
+            # બ્લેન્ક લાઈનનો પ્રોબ્લેમ અહીં સોલ્વ કર્યો છે
             clean_content = doc['content'].strip()
             if clean_content:
-                output.append(f"{clean_content}\n\n")
+                output.append(f"{clean_content}\n") 
             
     return "".join(output)
 
@@ -314,15 +312,12 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     document = update.message.document
-    
-    # ફાઈલ ચેક કરો
     if not (document.mime_type == "text/plain" or document.file_name.endswith('.txt')): return
     
     file = await document.get_file()
     file_bytes = await file.download_as_bytearray()
     content = file_bytes.decode('utf-8')
     
-    # જૂનો ડેટા સાફ કરો
     clear_logs_for_restore()
     
     lines = content.split('\n')
@@ -330,20 +325,19 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = 0
     
     for line in lines:
-        line = line.strip()
+        line = line.strip() # ખાલી જગ્યા હટાવો
         
-        # તારીખની લાઈન હોય તો અપડેટ કરો
         date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
         if date_match: 
             current_date = date_match.group(1)
             continue
             
-        # જો લાઈન ખાલી ના હોય અને તારીખ વાળી ના હોય તો જ સેવ કરો
+        # જો લાઈન ખાલી ના હોય તો જ સેવ કરો (આ મહત્વનું છે)
         if line and not line.startswith("==="):
             save_log(line, extract_tags(line), current_date)
             count += 1
             
-    await update.message.reply_text(f"♻️ **Restore Complete! {count} entries saved.**")
+    await update.message.reply_text(f"♻️ **Restore Successful! {count} entries saved.**")
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
