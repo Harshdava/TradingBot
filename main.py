@@ -63,6 +63,18 @@ def get_logs(tag_filter=None):
 def clear_logs_for_restore():
     logs_col.delete_many({})
 
+def get_unique_tags():
+    """બધા વપરાયેલા Tags શોધીને લિસ્ટ આપે છે"""
+    logs = logs_col.find({}, {"tags": 1})
+    unique_tags = set()
+    for doc in logs:
+        if doc.get('tags'):
+            parts = doc['tags'].split(',')
+            for p in parts:
+                clean = p.strip()
+                if clean: unique_tags.add(clean)
+    return sorted(list(unique_tags))
+
 def format_logs_for_export(logs):
     if not logs: return "No entries found."
     
@@ -70,26 +82,24 @@ def format_logs_for_export(logs):
     grouped_data = {}
     for doc in logs:
         date_part = doc['timestamp'].split(' ')[0]
-        if date_part not in grouped_data: grouped_data[date_part] = []
+        if date_part not in grouped_data:
+            grouped_data[date_part] = []
         grouped_data[date_part].append(doc)
     
-    # 2. Sort Dates: NEWEST FIRST (Descending)
+    # 2. Sort Dates: NEWEST FIRST (Descending - નવી તારીખ ઉપર)
     sorted_dates = sorted(grouped_data.keys(), reverse=True)
     
     output = []
     for date in sorted_dates:
-        output.append(f"\n=== 📅 {date} ===\n\n")  # તારીખ પછી એક લાઈન છોડો
+        output.append(f"\n=== 📅 {date} ===\n\n")
         
-        # 3. Sort Messages: OLDEST FIRST (Ascending)
+        # 3. Sort Messages: OLDEST FIRST (Ascending - સવારથી સાંજ)
         day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
         
         for doc in day_messages:
-            # .strip() થી શરૂઆત અને અંતની વધારાની જગ્યા જશે
-            # પણ વચ્ચેની લાઈનો એમ ને એમ રહેશે
+            # બ્લેન્ક લાઈન હટાવવા માટે .strip()
             clean_content = doc['content'].strip()
-            
             if clean_content:
-                # મેસેજ પૂરો થાય પછી 2 લાઈન છોડો જેથી બીજો મેસેજ અલગ પડે
                 output.append(f"{clean_content}\n\n") 
             
     return "".join(output)
@@ -216,22 +226,43 @@ async def delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
+    # Tags બટન ઉમેર્યું છે
     keyboard = [
         [KeyboardButton("📊 Journal"), KeyboardButton("📦 Full Backup")],
-        [KeyboardButton("⏰ Reminders"), KeyboardButton("❓ Help")]
+        [KeyboardButton("⏰ Reminders"), KeyboardButton("🏷 Tags")],
+        [KeyboardButton("❓ Help")]
     ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("**Trading Bot Ready.**\nLogs & Reminders are safe in MongoDB.", reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text("**Trading Bot Ready.**", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True), parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     msg = (
-        "**📈 COMMANDS:**\n\n"
-        "**1. Log Trade:**\n`/pnl +5000 Nifty Call`\n\n"
-        "**2. Reminders:**\n"
-        "`/reminder daily 09 15 Market Open`\n"
-        "`/reminder week mon 10 00 Weekly Meet`\n"
+        "**🤖 BOT USER GUIDE**\n\n"
+        "**1. 📝 Save Notes:**\n"
+        "Type anything to save. Use hashtags like `#idea`.\n\n"
+        "**2. 💰 Trading Journal (P&L):**\n"
+        "`/pnl +5000 Nifty Call`\n"
+        "`/pnl -2000 BankNifty Put`\n\n"
+        "**3. ⏰ Reminders:**\n"
+        "• `/reminder daily 09 15 Market Open`\n"
+        "• `/reminder once 25 12 10 00 Meeting`\n\n"
+        "**4. 🏷 Tags:**\n"
+        "Click **🏷 Tags** to see your hashtags.\n\n"
+        "**5. 📦 Backup & Restore:**\n"
+        "• Click **📦 Full Backup** to get file.\n"
+        "• Send `.txt` file back to Restore."
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update): return
+    tags = get_unique_tags()
+    if not tags:
+        await update.message.reply_text("❌ No tags found yet.")
+        return
+    msg = "**🏷 YOUR TAGS:**\n\n"
+    for t in tags:
+        msg += f"`{t}`\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,9 +317,15 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update): return
     text = update.message.text
-    if text == "📦 Full Backup" or text == "📦 Backup": await backup(update, context)
+    if text == "📦 Full Backup": await backup_command(update, context)
     elif text == "📊 Journal": await journal_command(update, context)
-    elif text == "⏰ Reminders": await list_jobs(update, context)
+    elif text == "⏰ Reminders": 
+        jobs = context.job_queue.jobs()
+        if not jobs: await update.message.reply_text("No active alerts."); return
+        msg = "**⏰ Active Alerts:**\n"
+        for i, job in enumerate(jobs): msg += f"ID: `{i}` | {job.next_t.astimezone(IST).strftime('%d-%m %H:%M') if job.next_t else 'N/A'} | {job.data}\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    elif text == "🏷 Tags": await tags_command(update, context) # આ લાઈન નવી છે
     elif text == "❓ Help": await help_command(update, context)
     else: save_log(text, extract_tags(text))
 
@@ -323,29 +360,19 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     clear_logs_for_restore()
     
-    # આપણે લાઈન બાય લાઈન નહીં, પણ "તારીખ" મુજબ ડેટા તોડીશું
-    # આ Regex પેટર્ન તારીખ શોધશે
+    # Regex થી તારીખ મુજબ ટુકડા કરો
     date_pattern = re.compile(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===")
-    
-    # તારીખ મુજબ ટુકડા કરો
     parts = date_pattern.split(content)
     
-    # parts[0] ખાલી હશે અથવા કચરો હશે, આપણે parts[1] થી શરૂ કરીશું
-    # parts લિસ્ટ આવું દેખાશે: [empty, '2026-02-16', 'Content...', '2026-02-15', 'Content...']
-    
     count = 0
-    
-    # આપણે 2-2 ના સ્ટેપમાં આગળ વધીશું (તારીખ અને તેનો ડેટા)
+    # લૂપ ફેરવો (તારીખ અને ડેટાની જોડીમાં)
     for i in range(1, len(parts), 2):
         if i + 1 >= len(parts): break
+        current_date = parts[i].strip()
+        body_text = parts[i+1].strip()
         
-        current_date = parts[i].strip() # તારીખ
-        body_text = parts[i+1].strip()  # તે તારીખનો બધો ટેક્સ્ટ
-        
-        # હવે આપણે મેસેજને અલગ પાડવા પડશે.
-        # આપણે ધારીએ છીએ કે બે મેસેજ વચ્ચે ડબલ લાઈન (\n\n) છે
+        # ડબલ લાઈનથી મેસેજ અલગ કરો
         messages = body_text.split('\n\n')
-        
         for msg in messages:
             clean_msg = msg.strip()
             if clean_msg:
@@ -465,7 +492,8 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("jobs", list_jobs))
     application.add_handler(CommandHandler("kill", delete_job))
     application.add_handler(CommandHandler("help", help_command))
-    
+    application.add_handler(CommandHandler("tags", tags_command))
+
     application.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_restore))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_media))
