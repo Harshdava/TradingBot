@@ -78,16 +78,19 @@ def format_logs_for_export(logs):
     
     output = []
     for date in sorted_dates:
-        output.append(f"\n=== 📅 {date} ===\n")
+        output.append(f"\n=== 📅 {date} ===\n\n")  # તારીખ પછી એક લાઈન છોડો
         
         # 3. Sort Messages: OLDEST FIRST (Ascending)
         day_messages = sorted(grouped_data[date], key=lambda x: x['timestamp'])
         
         for doc in day_messages:
-            # બ્લેન્ક લાઈનનો પ્રોબ્લેમ અહીં સોલ્વ કર્યો છે
+            # .strip() થી શરૂઆત અને અંતની વધારાની જગ્યા જશે
+            # પણ વચ્ચેની લાઈનો એમ ને એમ રહેશે
             clean_content = doc['content'].strip()
+            
             if clean_content:
-                output.append(f"{clean_content}\n") 
+                # મેસેજ પૂરો થાય પછી 2 લાઈન છોડો જેથી બીજો મેસેજ અલગ પડે
+                output.append(f"{clean_content}\n\n") 
             
     return "".join(output)
 
@@ -320,22 +323,34 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     clear_logs_for_restore()
     
-    lines = content.split('\n')
-    current_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    # આપણે લાઈન બાય લાઈન નહીં, પણ "તારીખ" મુજબ ડેટા તોડીશું
+    # આ Regex પેટર્ન તારીખ શોધશે
+    date_pattern = re.compile(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===")
+    
+    # તારીખ મુજબ ટુકડા કરો
+    parts = date_pattern.split(content)
+    
+    # parts[0] ખાલી હશે અથવા કચરો હશે, આપણે parts[1] થી શરૂ કરીશું
+    # parts લિસ્ટ આવું દેખાશે: [empty, '2026-02-16', 'Content...', '2026-02-15', 'Content...']
+    
     count = 0
     
-    for line in lines:
-        line = line.strip() # ખાલી જગ્યા હટાવો
+    # આપણે 2-2 ના સ્ટેપમાં આગળ વધીશું (તારીખ અને તેનો ડેટા)
+    for i in range(1, len(parts), 2):
+        if i + 1 >= len(parts): break
         
-        date_match = re.search(r"===\s*📅\s*(\d{4}-\d{2}-\d{2})\s*===", line)
-        if date_match: 
-            current_date = date_match.group(1)
-            continue
-            
-        # જો લાઈન ખાલી ના હોય તો જ સેવ કરો (આ મહત્વનું છે)
-        if line and not line.startswith("==="):
-            save_log(line, extract_tags(line), current_date)
-            count += 1
+        current_date = parts[i].strip() # તારીખ
+        body_text = parts[i+1].strip()  # તે તારીખનો બધો ટેક્સ્ટ
+        
+        # હવે આપણે મેસેજને અલગ પાડવા પડશે.
+        # આપણે ધારીએ છીએ કે બે મેસેજ વચ્ચે ડબલ લાઈન (\n\n) છે
+        messages = body_text.split('\n\n')
+        
+        for msg in messages:
+            clean_msg = msg.strip()
+            if clean_msg:
+                save_log(clean_msg, extract_tags(clean_msg), current_date)
+                count += 1
             
     await update.message.reply_text(f"♻️ **Restore Successful! {count} entries saved.**")
 
