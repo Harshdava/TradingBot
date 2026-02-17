@@ -64,19 +64,38 @@ def clear_logs_for_restore():
     logs_col.delete_many({})
 
 def format_logs_for_export(logs):
-    if not logs: return "No entries found."
-    output = []
-    current_date = None
+    if not logs:
+        return "No entries found."
+
+    # -------- GROUP BY DATE --------
+    grouped = {}
     for doc in logs:
         timestamp_str = doc['timestamp']
         content = doc['content']
-        
         date_part = timestamp_str.split(' ')[0]
-        if date_part != current_date:
-            output.append(f"\n=== 📅 {date_part} ===\n")
-            current_date = date_part
-        output.append(f"{content}\n\n")
+
+        if date_part not in grouped:
+            grouped[date_part] = []
+
+        grouped[date_part].append(content)
+
+    # -------- SORT DAYS (NEWEST FIRST) --------
+    sorted_dates = sorted(grouped.keys(), reverse=True)
+
+    output = []
+
+    # -------- PRINT EACH DAY --------
+    for date in sorted_dates:
+        output.append(f"\n=== 📅 {date} ===\n")
+
+        # Reverse messages INSIDE day (oldest → newest)
+        day_messages = list(reversed(grouped[date]))
+
+        for msg in day_messages:
+            output.append(f"{msg}\n\n")
+
     return "".join(output)
+
 
 # --- SECURITY CHECK ---
 async def check_auth(update: Update):
